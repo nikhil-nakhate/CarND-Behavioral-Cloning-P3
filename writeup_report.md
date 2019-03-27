@@ -1,30 +1,12 @@
 # **Behavioral Cloning** 
 
-## Writeup Template
-
-### You can use this file as a template for your writeup if you want to submit it as a markdown file, but feel free to use some other method and submit a pdf if you prefer.
-
----
-
-**Behavioral Cloning Project**
-
 The goals / steps of this project are the following:
-* Use the simulator to collect data of good driving behavior
+* Use the simulator to collect data of good driving behavior / Use sample data and augent it to obtain enough data
 * Build, a convolution neural network in Keras that predicts steering angles from images
 * Train and validate the model with a training and validation set
 * Test that the model successfully drives around track one without leaving the road
 * Summarize the results with a written report
 
-
-[//]: # (Image References)
-
-[image1]: ./examples/placeholder.png "Model Visualization"
-[image2]: ./examples/placeholder.png "Grayscaling"
-[image3]: ./examples/placeholder_small.png "Recovery Image"
-[image4]: ./examples/placeholder_small.png "Recovery Image"
-[image5]: ./examples/placeholder_small.png "Recovery Image"
-[image6]: ./examples/placeholder_small.png "Normal Image"
-[image7]: ./examples/placeholder_small.png "Flipped Image"
 
 ## Rubric Points
 ### Here I will consider the [rubric points](https://review.udacity.com/#!/rubrics/432/view) individually and describe how I addressed each point in my implementation.  
@@ -39,6 +21,7 @@ My project includes the following files:
 * drive.py for driving the car in autonomous mode
 * model.h5 containing a trained convolution neural network 
 * writeup_report.md summarizing the results
+* video.mp4 demonstrating the driving autonomously on the track
 
 #### 2. Submission includes functional code
 Using the Udacity provided simulator and my drive.py file, the car can be driven autonomously around the track by executing 
@@ -66,7 +49,7 @@ The model was trained and validated on different data sets to ensure that the mo
 
 #### 3. Model parameter tuning
 
-The model used an adam optimizer, so the learning rate was not tuned manually (model.py line 25).
+The model used an adam optimizer. After some experimentation the learning rate of 0.0001 proved to be the best. (model.py line 25).
 
 #### 4. Appropriate training data
 
@@ -89,13 +72,15 @@ Then I modified a few layers to reduce the size of the model since the size of t
 
 The final step was to run the simulator to see how well the car was driving around track one. There were a few spots where the vehicle fell off the track. To improve the driving behavior in these cases, I modified the learning rate, and made sure the generator was using all the training data. Initially I was using a completely stocastic generator and that might have caused it to not use the entire dataset.
 
+The a very small learning rate turned out to be the best choice in this case. But since many augmentation / regularization techniques were used, the dataset turned out to be comprehensive and the model was fully trained in 15 epochs.
+
 At the end of the process, the vehicle is able to drive autonomously around the track without leaving the road.
 
 #### 2. Final Model Architecture
 
 The final model architecture (model.py lines 103-120) consisted of a convolution neural network with the following layers and layer sizes:
-
-_________________________________________________________________
+```sh
+________________________________________________________________
 Layer (type)                 Output Shape              Param #   
 =================================================================
 lambda_1 (Lambda)            (None, 80, 320, 3)        0         
@@ -131,31 +116,25 @@ dense_5 (Dense)              (None, 1)                 11
 Total params: 195,095
 Trainable params: 195,095
 Non-trainable params: 0
-
+```
 #### 3. Creation of the Training Set & Training Process
 
-To capture good driving behavior, I first recorded two laps on track one using center lane driving. Here is an example image of center lane driving:
+I have used only the sample data provided to us in the sample data folder of the class but a variety of augmentation and recovery techniques were used so that the neural network generalizes well.
 
-![alt text][image2]
+I randomly shuffled the data set and put 10% of the data into a validation set. 
 
-I then recorded the vehicle recovering from the left side and right sides of the road back to center so that the vehicle would learn to .... These images show what a recovery looks like starting from ... :
+I then separated the training set images into driving straight, left and right first using a threshold of 0.15 magnitude for right and left turns. This I can later use to get left and right camera images for recovery steps.
 
-![alt text][image3]
-![alt text][image4]
-![alt text][image5]
+I took the idea in the concept 13 of the Behavioral cloning section and experimented with different values of the steering adjustment angle. Here I have only augmented the turning right with the left camera images and increasing the intensity of the turn by the correcting factor and vice versa but I could have also added the left camera images to the driving left list by reducing the intensity of the turn.
 
-Then I repeated this process on track two in order to get more data points.
+After the collection process, I had 8727 number of data points in the training set. 
 
-To augment the data sat, I also flipped images and angles thinking that this would ... For example, here is an image that has then been flipped:
+I then preprocessed this data by cropping the top 60 rows which mostly had the sky and trees and the bottom 20 rows of the images which just had the boot of the car. This proved to be a very important step in the preprocessing.
 
-![alt text][image6]
-![alt text][image7]
+I also have a normalization layer at the beginning of the neural network which caps the intensity values of the pixels between 0 and 1. This helps in faster training.
 
-Etc ....
+In order to augment the images further, I add a random brightness factor to the training image and also some noise to the training angle. This helps the neural network generalize better and we can see that it performs much better on the validation data which doesn't have this kind of noise.
 
-After the collection process, I had X number of data points. I then preprocessed this data by ...
-
-
-I finally randomly shuffled the data set and put Y% of the data into a validation set. 
+Flipping the images on the vertical axis is another very common technique used in Convolutional Neural Networks that is used by me here. I, in turn multiply the steering angle by -1. This serves like the idea presented in the lectures on the lines of driving the car in the opposite direction.
 
 I used this training data for training the model. The validation set helped determine if the model was over or under fitting. The ideal number of epochs was Z as evidenced by ... I used an adam optimizer so that manually training the learning rate wasn't necessary.
