@@ -9,15 +9,21 @@ from keras.models import Sequential
 from keras.layers import Dense, Flatten, Dropout, Lambda
 from keras.layers import Cropping2D
 from keras.layers import Conv2D
+from keras.callbacks import ModelCheckpoint
 from keras.optimizers import Adam
 from keras.regularizers import l2
+import pickle
 
 # Constants
 steering_adjustment = 0.27
-epochs = 3
-batch_size = 128
-# What determines a turn, Can be done better by taking a mean of the positive values and in turn for the negative values
-turn_thresh = 0.15
+epochs              = 15
+batch_size          = 128
+bright_lower        = 0.3
+
+# What determines a turn, Can be done better by taking a mean or some other metric
+# of the positive values and in turn for the negative values
+turn_thresh         = 0.15
+turn_angle_noise    = (-0.10, 0.10)
 
 # Preparing data from driving_log.csv (Sample training data)
 colnames = ['center', 'left', 'right', 'steering', 'throttle', 'brake', 'speed']
@@ -28,11 +34,10 @@ left = np.array(['/opt/carnd_p3/data/' + x.strip() for x in data.left.tolist()])
 right = np.array(['/opt/carnd_p3/data/' + x.strip() for x in data.right.tolist()])
 steering = np.array(data.steering.tolist())
 
-input_shape = mpimg.imread(center[0])[60:140,:].shape
-# input_shape = (64, 64, 3)
+input_shape = mpimg.imread(center[0]).shape
 
 # Split train and valid
-# Shuffle center and steering. Using 10% of central images and steering angles for validation.
+# Shuffle center and steering. Using 10% of center camera images and steering angles for validation.
 center_train, X_valid, steering_train, y_valid = train_test_split(center, steering, test_size=0.10, shuffle=True, random_state=100)
 
 center_train = np.array(center_train)
@@ -56,21 +61,20 @@ d_straight = center_train[(steering_train < turn_thresh ) & (steering_train > -t
 # Left camera images can be added to the left driving list by making a softer turn angle than the center image
 # The opposite is done for driving right list
 # Could be done better than converting to list but dont have to worry about appending dimensions
-a_left.tolist().extend((steering[np.where(steering < -turn_thresh)] - steering_adjustment).tolist())
-d_left.tolist().extend((right[np.where(steering < -turn_thresh)]).tolist())
+a_left = a_left.tolist() + (steering[np.where(steering < -turn_thresh)] - steering_adjustment).tolist()
+d_left = d_left.tolist() + (right[np.where(steering < -turn_thresh)]).tolist()
 
-a_right.tolist().extend((steering[np.where(steering > turn_thresh)] + steering_adjustment).tolist())
-d_right.tolist().extend((left[np.where(steering > turn_thresh)]).tolist())
+a_right = a_right.tolist() + (steering[np.where(steering > turn_thresh)] + steering_adjustment).tolist()
+d_right = d_right.tolist() + (left[np.where(steering > turn_thresh)]).tolist()
 
 # Combine images from center, left and right cameras
-X_train = d_straight.tolist() + d_left.tolist() + d_right.tolist()
-y_train = np.float32(a_straight.tolist() + a_left.tolist() + a_right.tolist())
-
+X_train = d_straight.tolist() + d_left + d_right
+y_train = np.float32(a_straight.tolist() + a_left + a_right)
 
 # Augmentation and preprocessing
 def random_brightness(image):
     hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-    rand = np.random.uniform(0.3, 1.0)
+    rand = np.random.uniform(bright_lower, 1.0)
     hsv[:, :, 2] = rand * hsv[:, :, 2]
     new_img = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
     return new_img
@@ -83,54 +87,47 @@ def flip(image, angle):
     return new_image, new_angle
 
 
-def crop_resize(image):
-  return image[60:140,:]
-
-
 # Generators: inspired from: https://medium.com/@ensembledme/writing-custom-keras-generators-fe815d992c5a
-# Training generator: Shuffle training data before choosing data,
-# pick random training data to feed into batch at each "for" loop.
-# Apply random brightness, resize, crop into the chosen sample. Add some small random noise for chosen angle.
+# Training generator: Shuffle training data before choosing data
+# Go through each training sample in outer loop and create batch and return in inner loop
+# This works better than using a completely Stocastic method
+# Apply random brightness into the chosen sample, Add some small random noise for the chosen angle
 def generator_data(batch_size):
     batch_train = np.zeros((batch_size, *input_shape), dtype=np.float32)
     batch_angle = np.zeros((batch_size,), dtype=np.float32)
     while True:
-        data, angle = shuffle(X_train, y_train)
-        for i in range(batch_size):
-            choice = int(np.random.choice(len(data), 1))
-            # Adding random brightness changes to the training image
-            batch_train[i] = crop_resize(random_brightness(mpimg.imread(data[choice].strip())))
-            # Adding noise to the steer angle
-            batch_angle[i] = angle[choice] * (1 + np.random.uniform(-0.05, 0.05))
-            # Flip random images
-            if np.random.randint(2) == 1:
-                batch_train[i], batch_angle[i] = flip(batch_train[i], batch_angle[i])
-        yield batch_train, batch_angle
+        train_data, angle = shuffle(X_train, y_train)
+        for i in range(len(X_train) // batch_size):
+            for j in range(batch_size):
+                choice = int(np.random.choice(len(train_data), 1))
+                # Adding random brightness changes to the training image
+                batch_train[j] = random_brightness(mpimg.imread(train_data[choice].strip()))
+                # Adding noise to the steer angle
+                batch_angle[j] = angle[choice] * (1 + np.random.uniform(*turn_angle_noise))
+                # Flip random images
+                if np.random.randint(2) == 1:
+                    batch_train[j], batch_angle[j] = flip(batch_train[j], batch_angle[j])
+            yield batch_train, batch_angle
 
 
-# Validation generator: pick random samples. Apply resizing and cropping on chosen samples
-def generator_valid(data, angle, batch_size):
+# Validation generator: Pick random samples and create a batch
+def generator_valid(valid_data, angle, batch_size):
     batch_train = np.zeros((batch_size, *input_shape), dtype=np.float32)
     batch_angle = np.zeros((batch_size,), dtype=np.float32)
     while True:
-        data, angle = shuffle(data, angle)
+        data, angle = shuffle(valid_data, angle)
         for i in range(batch_size):
-            rand = int(np.random.choice(len(data), 1))
-            batch_train[i] = crop_resize(mpimg.imread(data[rand].strip()))
+            rand = int(np.random.choice(len(valid_data), 1))
+            batch_train[i] = mpimg.imread(valid_data[rand].strip())
             batch_angle[i] = angle[rand]
         yield batch_train, batch_angle
 
 
 def nvidia_model():
     # Training Architecture: inspired by the NVIDIA End to End model
-#     input_size = 64
     model = Sequential()
-    
-    # Doesn't get serialized and had to run the network again, included it in a different method
-#     model.add(Cropping2D(cropping=((60, 20), (0, 0)), input_shape=input_shape))
-#     model.add(Lambda(lambda image: tf.image.resize_images(image, (input_size, input_size))))
-
-    model.add(Lambda(lambda x: x / 255 - 0.5, input_shape=input_shape))
+    model.add(Cropping2D(cropping=((60, 20), (0, 0)), input_shape=input_shape))
+    model.add(Lambda(lambda x: x / 255 - 0.5))
     model.add(Conv2D(24, (5, 5), strides = (2, 2), activation='relu', kernel_regularizer = l2(0.001)))
     model.add(Conv2D(36, (5, 5), strides = (2, 2), activation='relu', kernel_regularizer = l2(0.001)))
     model.add(Conv2D(48, (5, 5), strides = (2, 2), activation='relu', kernel_regularizer = l2(0.001)))
@@ -145,7 +142,7 @@ def nvidia_model():
     model.add(Dropout(0.5))
     model.add(Dense(10, kernel_regularizer=l2(0.001)))
     model.add(Dense(1, kernel_regularizer=l2(0.001)))
-    adam = Adam(lr=0.001)
+    adam = Adam(lr=0.0001)
     model.compile(optimizer=adam, loss='mse', metrics=['accuracy'])
     model.summary()
     return model
@@ -157,13 +154,24 @@ def train():
     valid_generator = generator_valid(X_valid, y_valid, batch_size)
 
     model = nvidia_model()
+    
+    filepath="model-check.h5"
+    checkpoint = ModelCheckpoint(filepath, monitor='val_loss', verbose=0, save_best_only=True)
+    callbacks_list = [checkpoint]
 
-    model.fit_generator(data_generator, steps_per_epoch=len(X_train) // batch_size,
-                        epochs=epochs, validation_data=valid_generator, validation_steps=len(X_valid))
-
-    print('Done Training')
-
+    history_fit = model.fit_generator(data_generator, steps_per_epoch = len(X_train) // batch_size,
+                        epochs=epochs, validation_data=valid_generator, validation_steps=len(X_valid),
+                        callbacks=callbacks_list)
+    
+    print('Saving model ...')
+    
     model.save("model.h5")
+    
+    print('Model saved!')
+    
+    # Used later to plot the validation vs training loss
+    with open('hist.p', 'wb') as file_pi:
+        pickle.dump(history_fit.history, file_pi)
 
 if __name__ == '__main__':
     train()
